@@ -117,7 +117,9 @@ def _rows(specs):
 class CalibratorBehavior(unittest.TestCase):
     def _cal(self, rows):
         cal = C.Calibrator()
-        cal._resolved = staticmethod(lambda: rows)   # shadow the class staticmethod on the instance
+        cal._resolved = lambda: rows   # instance attr shadows the class staticmethod;
+        # a plain lambda (not staticmethod(...)) because staticmethod objects only
+        # became directly callable in CPython 3.10 (bpo-43682) and this repo claims 3.8+
         cal.refit(force=True)
         return cal
 
@@ -144,7 +146,7 @@ class CalibratorBehavior(unittest.TestCase):
         # to the Platt map it computed — NOT silently disable calibration.
         with _Cfg(cal_enabled=True, cal_method="beta", cal_min_n=60, cal_min_class_n=10):
             cal = C.Calibrator()
-            cal._resolved = staticmethod(lambda: _rows([(0.8, 1, 12), (0.6, 0, 50), (0.3, 0, 50), (0.2, 1, 8)]))
+            cal._resolved = lambda: _rows([(0.8, 1, 12), (0.6, 0, 50), (0.3, 0, 50), (0.2, 1, 8)])
 
             def fake_fit_beta(pairs):          # simulate a rejected (non-monotone) beta fit
                 cal._A, cal._B, _ = C.fit_platt(pairs)
@@ -244,6 +246,72 @@ class WalkForwardNoLookahead(unittest.TestCase):
             self.assertLessEqual(wf["delta_ci95"][0], wf["delta_ci95"][1])
             self.assertIn("discrimination_auc", ins)
             self.assertIn("brier_base_rate", ins)
+
+    def _run(self, recs, **cfg):
+        """Fit the walk-forward over a synthetic ledger and return its claim block."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ledger.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in recs))
+            import engine.runtime as rt
+            old = rt.ledger
+            rt.ledger = self._fake_ledger(path)
+            try:
+                with _Cfg(cal_enabled=True, cal_method="platt", cal_min_n=60,
+                          cal_min_class_n=10, cal_refit_min_new=20,
+                          cal_boot_resamples=200, **cfg):
+                    cal = C.Calibrator()
+                    cal.refit(force=True)
+                    return cal.insights()["walk_forward"]
+            finally:
+                rt.ledger = old
+
+    def test_walkforward_does_not_peek_at_later_outcomes(self):
+        """The look-ahead property, actually pinned.
+
+        `test_walkforward_time_gate_and_claim` above asserts the claim block is
+        COHERENT — deployed mode, n_eval > 0, calibration beats raw, well-ordered CI.
+        None of that can distinguish a prequential fit from one that trains on the
+        whole final-outcome set: look-ahead makes the calibrated Brier *better*, so a
+        leak satisfies every one of those assertions. Verified — replacing the refit
+        with `fit_platt` over all final outcomes leaves that test green.
+
+        This one separates them with a REGIME FLIP. The first half is honest
+        (y ~ Bernoulli(p)); the second half is wildly overconfident (logit shifted
+        -3.0). A prequential calibrator scores the honest half with a map fit only on
+        honest data, so it leaves those forecasts roughly alone and only corrects once
+        the flip is in its training window. A peeking calibrator scores every forecast
+        with one pooled compromise map, which is wrong for BOTH halves — and it lands a
+        visibly better Brier because it already knows how the story ends.
+
+        Measured on this fixture (seed 7, 200 + 200): prequential 0.2473, look-ahead
+        0.1959, raw 0.2993. The bound below sits between the first two. If a future
+        change moves these numbers, re-measure both arms before touching the constant —
+        loosening it to make a red test green would retire the only assertion here that
+        has any teeth.
+        """
+        rng = random.Random(7)
+        recs = []
+        for i in range(400):
+            ts = 1000 + i * 10
+            p = round(rng.uniform(0.30, 0.90), 2)
+            if i < 200:
+                y = 1.0 if rng.random() < p else 0.0                       # honest
+            else:
+                y = 1.0 if rng.random() < C._sigmoid(C._logit(p) - 3.0) else 0.0
+            recs.append({"kind": "forecast", "id": f"f{i}", "probability": p, "ts": ts,
+                         "brief_id": f"b{i // 4}", "horizon": "24h"})
+            recs.append({"kind": "resolution", "id": f"f{i}", "outcome": y,
+                         "resolved_ms": ts + 500})
+        wf = self._run(recs)
+        self.assertEqual(wf["mode"], "deployed")
+        self.assertGreater(wf["n_eval"], 0)
+        # calibration must still earn its keep on data this badly miscalibrated
+        self.assertLess(wf["brier_cal_eval"], wf["brier_raw_eval"])
+        # ...but it must NOT reach the score only a peeking fit can reach
+        self.assertGreater(
+            wf["brier_cal_eval"], 0.22,
+            f"brier_cal_eval={wf['brier_cal_eval']} is at or below the look-ahead arm "
+            "(0.1959) — the walk-forward is training on outcomes it should not yet know")
 
 
 if __name__ == "__main__":

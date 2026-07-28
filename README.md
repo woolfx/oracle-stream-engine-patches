@@ -55,11 +55,15 @@ pool, so the judge is never offered it. Conservative by construction — only un
 fully-specified timestamps are read, an ambiguous `05/06/2026` returns `None` rather than
 guess a locale, and **an unparseable signal stays admissible**. Most evidence states no
 absolute time at all, and treating silence as guilt would starve the judge and collapse every
-verdict to "no". That is also the limit of it: of 100 resolved-correct records scanned, 7
-state a parseable absolute timestamp and 2 of those predate their forecast — **a floor, not a
-rate**. And the guard is prospective. It keeps retrodictions out of future evidence pools; it
-does not re-grade what is already in the ledger, so the published hit rate still carries an
-unquantified retrodiction component bounded below by 2 and above by nothing established here.
+verdict to "no". That is also the limit of it. Across every `yes` resolution ever written
+(101, superseded ones included), 7 state a parseable absolute timestamp and 2 of those predate
+their forecast — the two voided. Of the 46 records that count as correct *today*, 3 state one
+and **0** predate. The guard is prospective: it keeps retrodictions out of future evidence
+pools, it does not re-grade the ledger — but the two known cases left the rate by the void, so
+the established residual is **zero**, not two. What that zero is worth is the caveat: 3 of 46
+is far too small to clear the rate, and it is not a random 3 — the feeds that timestamp their
+events are the minority. Established floor 0, **no upper bound established here**. The method
+proves specific cases; it cannot certify their absence.
 
 ## Why calibration.py exists
 
@@ -94,11 +98,17 @@ no fixtures:
 python3 -m unittest discover -s tests -v
 ```
 
-57 tests. `tests/test_relevance.py` (23) is every real mis-resolution from the audits
-above. `tests/test_retrodiction.py` (17) is the ordering guard — the live record above pinned
-as a regression, plus the two properties that matter more than the catch: an unparseable
-signal stays admissible, and an ambiguous date refuses to guess. `tests/test_calibration.py`
-(17) exercises the numerics, the no-look-ahead property and the fallback ladder.
+58 tests. `tests/test_relevance.py` (23) covers the mis-resolution *classes* the audits
+found — 7 pin a specific voided record by id, the rest are the properties and controls
+around them, including one record the audit deliberately KEPT, because a guard that
+rejects everything is not a guard. It is not one test per voided resolution; the audits
+void 64 records and most fall into a handful of shapes. `tests/test_retrodiction.py` (17)
+is the ordering guard — the live record above pinned as a regression, plus the two
+properties that matter more than the catch: an unparseable signal stays admissible, and
+an ambiguous date refuses to guess. `tests/test_calibration.py` (18) exercises the
+numerics, the fallback ladder, and the no-look-ahead property — pinned by a regime-flip
+fixture that a peeking fit fails, since every coherence assertion around it passes just
+as happily when the walk-forward cheats.
 
 `calibration.py` reads its tunables from the surrounding engine, which this repo does not
 ship (see below), so the calibration suite stands those modules in from
