@@ -13,8 +13,11 @@ re-resolution audit tooling, and the receipt catcher (infra/receipts.py):
         both sides name places and none overlap; both sides carry a
         recognized hazard/topic concept and they're disjoint.
 
-    filter_signals(statement, location, signals, cap=14) -> list[str]
+    filter_signals(statement, location, signals, cap=SIGNAL_CAP, made_ms=None) -> list[str]
         The admissible-evidence list shown to the judge, order preserved.
+        Given `made_ms` (the forecast's publication time) it also drops any
+        signal whose own text dates its event earlier — a forecast may not be
+        confirmed by something that had already happened when it was written.
 
 Pure stdlib, no LLM: it must stay cheap enough to run on every verdict and
 receipt, and dumb enough to be auditable by a human reading this file.
@@ -289,9 +292,67 @@ def citable(statement: str, location: str | None, signal: str) -> bool:
     return bool(c_coarse & s_coarse)
 
 
+# How many admissible signals reach the judge's numbered list. Exported because
+# `filter_signals` keeps the LAST `cap` entries: a caller appending a new class of
+# evidence to a full pool would silently evict the archived window signals unless
+# it widens the window by what it added. Bind to this rather than re-typing 14.
+SIGNAL_CAP = 14
+
+
+# ── retrodiction guard (2026-07-28) ──
+# A forecast is only a forecast if its evidence came AFTER it. citable() checks
+# subject, place and thresholds but never ORDERING, so an event already sitting in
+# the oracle's own brief could be forecast, then graded "correct" against itself.
+# Found live: pred_33040ed18b, "A major earthquake will strike Mexico within the
+# next fortnight", published 2026-07-17 17:32 UTC and resolved YES citing the M7.3
+# of 14:48 UTC the SAME MORNING — 2.7 h before it was written. GDACS lines carry
+# their own event time and linger in the brief for days, so the stale timestamp
+# rode the "[now]" snapshot straight into the numbered evidence.
+#
+# Conservative by construction: only unambiguous, fully-specified timestamps are
+# read, and an ambiguous day/month pair yields None. None means "cannot prove
+# anything", NEVER "fine" — an unparseable signal is left admissible, because the
+# common case (NWS product lines, market snapshots) states no absolute time and
+# dropping those would gut the judge's evidence.
+_EV_ISO = re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)[T ](\d{1,2}):(\d{2})")
+_EV_DMY = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d\d)\s+(\d{1,2}):(\d{2})\s*UTC")
+_EV_MDY = re.compile(r"\bOn (\d{1,2})/(\d{1,2})/(20\d\d) (\d{1,2}):(\d{2}):\d{2}\s*(AM|PM)")
+
+
+def signal_event_ms(text: str) -> int | None:
+    """Absolute event time stated inside a signal, epoch ms — or None if the text
+    states none, or states one that cannot be read without guessing."""
+    import datetime as _dt
+
+    m = _EV_ISO.search(text)
+    if m:
+        y, mo, d, h, mi = (int(x) for x in m.groups())
+    elif (m := _EV_DMY.search(text)):
+        d, mo, y, h, mi = (int(x) for x in m.groups())
+        if d <= 12:
+            return None                     # could equally be MM/DD — refuse to guess
+    elif (m := _EV_MDY.search(text)):
+        mo, d, y, h, mi = (int(m.group(i)) for i in range(1, 6))
+        h = h % 12 + (12 if m.group(6) == "PM" else 0)
+    else:
+        return None
+    try:
+        return int(_dt.datetime(y, mo, d, h, mi,
+                                tzinfo=_dt.timezone.utc).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
 def filter_signals(statement: str, location: str | None,
-                   signals: list[str], cap: int = 14) -> list[str]:
-    """Admissible evidence for the judge, order preserved, deduped, capped."""
+                   signals: list[str], cap: int = SIGNAL_CAP,
+                   made_ms: int | None = None) -> list[str]:
+    """Admissible evidence for the judge, order preserved, deduped, capped.
+
+    `made_ms` is the forecast's publication time. When given, any signal whose own
+    text dates its event BEFORE that moment is dropped: the judge cannot cite what
+    it never sees, so retrodiction is blocked at the source rather than patched at
+    the ledger. Omitted (the default) preserves the pre-2026-07-28 behaviour.
+    """
     out: list[str] = []
     seen: set[str] = set()
     for s in signals:
@@ -299,6 +360,10 @@ def filter_signals(statement: str, location: str | None,
         if not s or s in seen:
             continue
         seen.add(s)
+        if made_ms is not None:
+            ev = signal_event_ms(s)
+            if ev is not None and ev < made_ms:
+                continue
         if related(statement, location, s):
             out.append(s)
     return out[-cap:]

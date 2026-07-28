@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Side-effect import, must precede `engine`: stands in for the engine modules
+# calibration.py imports, so this repo's tests run on their own. Inert inside a real
+# PYTHIA checkout, where the actual modules win. See tests/_standalone.py.
+import _standalone  # noqa: E402,F401
 
 from engine import calibration as C  # noqa: E402
 from engine.config import CONFIG  # noqa: E402
