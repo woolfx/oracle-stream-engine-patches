@@ -1,0 +1,5 @@
+# Renders the "Sponsor" button in this repo's sidebar and above the README.
+# The github: entry stays inert until GitHub Sponsors is enabled for the account —
+# the button then appears on its own, no commit needed here.
+github: woolfx
+# ko_fi: <handle>   # uncomment once the Ko-fi page exists
